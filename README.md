@@ -22,6 +22,3 @@ This project is designed to help data science job aspirants improve their hiring
 - PostgreSQL Database ("ds_jobs")
 - R (with packages: dplyr, DBI, RPostgres, jsonlite, tidyverse, etc.)
 - CSV data files in the **data/** folder
-
-## Contributing
-Contributions are welcome! Please follow standard Git practices and add clear comments to help maintain the project.
