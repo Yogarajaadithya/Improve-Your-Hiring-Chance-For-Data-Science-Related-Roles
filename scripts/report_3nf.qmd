@@ -1,0 +1,521 @@
+---
+title: "Data Science Jobs Analysis"
+subtitle: "Updated: `r format(Sys.Date(), '%B %d, %Y')`"
+toc: true
+format:
+  html:
+    html-math-method: katex
+    code-tools: true
+    self-contained: true
+    page-layout: full
+    grid:
+      sidebar-width: 0px
+      body-width: 1100px
+      margin-width: 200px
+      gutter-width: 1.5rem
+execute:
+  warning: false
+---
+
+## Data ETL and Report Pipeline
+
+```{mermaid}
+flowchart LR
+  A[Web Scraped Data] --> B(Clean scraped data)
+  B --> C(get domain of companies using chatGPT API service)
+  C --> D(Normalize and Push Data into Postgres)
+  D --> E[Generate Analysis in a Quarto HTML Report]
+```
+
+## Load Libraries 
+
+```{r}
+library(ggplot2)
+library(gt)
+library(gtExtras)
+library(maps)
+library(tidygeocoder)
+library(tidyverse)
+library(readr)
+library(stringr)
+library(jsonlite)
+library(dbplyr)
+library(DBI)
+```
+
+## Pull Data from Postgres
+
+```{r}
+pw <- "muix7pcj"
+
+con <- dbConnect(
+  RPostgres::Postgres(), 
+  dbname = "ds_jobs",
+  port = 5432, 
+  user = "postgres", 
+  password = pw
+  )
+```
+
+## Dataset overview
+
+### First 5 rows
+```{r}
+
+knitr::kable(head(dbGetQuery(con, "SELECT * FROM jobpostings;"),5))
+
+knitr::kable(head(dbGetQuery(con, "SELECT * FROM skills_table;"),5))
+
+knitr::kable(head(dbGetQuery(con, "SELECT * FROM skill_categories;"),5))
+
+knitr::kable(head(dbGetQuery(con, "SELECT * FROM job_skill_mapping;"),5))
+```
+
+### Column type Main Table
+```{r}
+str(dbGetQuery(con, "SELECT * FROM jobpostings;"))
+```
+### Number of Rows and Cols
+
+```{r}
+nrow(dbGetQuery(con, "SELECT * FROM jobpostings;"))
+
+nrow(dbGetQuery(con, "SELECT * FROM skills_table;"))
+
+nrow(dbGetQuery(con, "SELECT * FROM skill_categories;"))
+
+nrow(dbGetQuery(con, "SELECT * FROM job_skill_mapping;"))
+```
+
+# 5 Questions answered
+
+Each question is answered by querying the needed data from the Postgres database. This will involve joining multiple tables to get the desired data.
+
+## Q1. What are the main technologies? 
+
+```{r}
+#| code-fold: true
+
+# skill_vector <- unlist(strsplit(gsub("\\[|\\]|'", "", df$job_skills), ",\\s*"))
+# freq_table <- as.data.frame(table(skill_vector))
+# colnames(freq_table) <- c("skill", "n")
+# 
+# freq_table <- freq_table[order(-freq_table$n), ]
+# top_20 <- head(freq_table, 20)
+# top_20$skill <- factor(top_20$skill, levels = top_20$skill[order(top_20$n, decreasing = FALSE)])
+
+plot_df <- dbGetQuery(con, "WITH SkillCount AS (
+    SELECT st.skill,
+    COUNT(jsm.jobid) AS job_count
+    FROM job_skill_mapping jsm
+    JOIN skills_table st ON jsm.skill_id = st.skill_id
+    GROUP BY st.skill
+)
+SELECT skill, job_count
+FROM SkillCount
+ORDER BY job_count DESC
+LIMIT 20;")
+
+# most popular technologies
+ggplot(plot_df, aes(y = reorder(skill, job_count), x = job_count)) +
+  geom_bar(stat = "identity", fill = "firebrick3") +
+  scale_x_continuous(breaks = c(0,2500,5000,7500,10000,12500)) +
+  theme_minimal() +
+  labs(title = "Top 20 Skills",
+       x = "Frequency",
+       y = "Skill")
+
+ggsave("../output/top20_skills.png", dpi = 400, bg = "#FFFFFF")
+```
+
+### What are the main technologies by category?
+
+```{r}
+#| code-fold: true
+
+color_vec <- c("firebrick3", "#00A08A", "#F98400", "#5BBCD6", "#C6CDF7", "#000000", "#CDC08C", "#004990", "grey", "darkseagreen4")
+
+# most popular technologies by category
+# v_cleaned <- gsub("'", "\"", df$job_type_skills)
+# 
+# parsed_list <- lapply(v_cleaned, fromJSON)
+# 
+# keys <- c()
+# values <- c()
+# 
+# for (item in parsed_list) {
+#   for (key in names(item)) {
+#     keys <- c(keys, key)  # Append the key
+#     values <- c(values, paste(item[[key]], collapse = ", "))
+#   }
+# }
+# 
+# key_value_df <- data.frame(Key = keys, Values = values)
+# 
+# separate_skill_type <- function(i, key_value_df){
+#   skill_vector <- unlist(strsplit(gsub("\\[|\\]|'", "", key_value_df[key_value_df$Key == i,]$Values), ",\\s*"))
+#   freq_table <- as.data.frame(table(skill_vector))
+#   colnames(freq_table) <- c("skill", "n")
+#   freq_table$type <- i
+#   
+#   return(freq_table)
+# }
+# 
+# skill_type_freq <- data.frame(skill = character(), n = integer(), type = character())
+# 
+# for(i in unique(key_value_df$Key)){
+#   skill_type_freq <- rbind(skill_type_freq, separate_skill_type(i, key_value_df))
+# }
+# 
+# df_top_10 <- skill_type_freq %>%
+#   group_by(type) %>%
+#   arrange(desc(n)) %>%
+#   slice_head(n = 10) %>%
+#   ungroup()
+
+plot_df <- dbGetQuery(con, "WITH SkillCount AS (
+SELECT sc.skill_category, st.skill,
+COUNT(jsm.jobid) AS job_count
+FROM job_skill_mapping jsm
+JOIN skills_table st ON jsm.skill_id = st.skill_id
+JOIN skill_categories sc ON st.skill_id = sc.skill_id
+GROUP BY sc.skill_category, st.skill
+), 
+RankedSkills AS (SELECT skill_category, skill, job_count,
+RANK() OVER (PARTITION BY skill_category ORDER BY job_count DESC) AS rank
+FROM SkillCount
+)
+SELECT skill_category, skill, job_count
+FROM RankedSkills
+WHERE rank <= 10
+ORDER BY skill_category, rank;")
+
+g <- ggplot(plot_df, aes(x = reorder(skill, job_count), y = job_count, fill = skill_category)) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(breaks = c(0,2500,5000,7500,10000,12500), limits = c(0, 13600), expand = c(0, 0)) +
+  geom_text(aes(label = job_count,  colour = skill_category), vjust = 0.3, hjust = -0.3, size = 2.5, show.legend = FALSE) +
+  facet_wrap(~ skill_category, scales = "free_y", ncol = 2) +
+  coord_flip() + 
+  scale_fill_manual(values = color_vec) +
+  scale_colour_manual(values = color_vec) +
+  theme_minimal() +
+  labs(x = "Skill", y = "Count", title = "Top 10 Skills by Skill Category") +
+  guides(fill = "none") 
+```
+
+
+```{r}
+#| fig-width: 8
+#| fig-height: 12
+#| fig-format: svg
+
+g
+
+ggsave("../output/top10_skill_cat.png", dpi = 400, bg = "#FFFFFF")
+```
+
+
+## Q2. What is the median salary for each job title?  
+
+```{r}
+#| code-fold: true
+
+plot_df <- dbGetQuery(con, "SELECT job_title_short, salary_year_avg FROM jobpostings;")
+
+plot_df <- plot_df %>% 
+      group_by(job_title_short) %>%
+      summarise(med_salary = round(median(salary_year_avg),0)) %>%
+      arrange(desc(med_salary))
+
+# avg salary for each role
+ggplot(plot_df, aes(y = med_salary, x = reorder(job_title_short, med_salary))) +
+  geom_bar(stat = "identity", fill = "firebrick3") +
+  scale_y_continuous(limits = c(0, 155000), labels = scales::label_dollar(scale_cut = scales::cut_short_scale()), expand = c(0,0)) +
+  coord_flip() + 
+  theme_minimal() +
+  labs(title = "Median Salary for Each Role",
+       y = "Median Salary (USD)",
+       x = "Job Title")
+
+ggsave("../output/med_salary_role.png", dpi = 400, bg = "#FFFFFF")
+```
+
+```{r}
+#| code-fold: true
+
+# complicated string parsing avoided cause we normalized our data
+
+# # Parse the job_type_skills vector and extract the relevant data
+# v_cleaned <- gsub("'", "\"", df$job_type_skills)
+# parsed_skills = lapply(v_cleaned, function(x) fromJSON(x))
+# 
+# # Initialize vectors to store the final data
+# skill = c()
+# salary = c()
+# type = c()
+# salary_year_avg = df$salary_year_avg
+# 
+# # Loop through each parsed skill and its corresponding salary
+# for(i in 1:length(parsed_skills)){
+#   # Get the skill types and corresponding skills
+#   job_types = names(parsed_skills[[i]])
+#   skills = unlist(parsed_skills[[i]])
+#   
+#   # Append the data to the final vectors
+#   skill = c(skill, skills)
+#   salary = c(salary, rep(salary_year_avg[i], length(skills)))
+#   type = c(type, rep(job_types, sapply(parsed_skills[[i]], length)))
+# }
+# 
+# # Combine into a data frame
+# plot_df = cbind.data.frame(skill = skill, salary = salary, type = type)
+# plot_df[plot_df$skill == "no-sql",]$skill <- "nosql"
+
+
+plot_df <- dbGetQuery(con, 
+"SELECT sc.skill_category, st.skill, jp.salary_year_avg
+FROM job_skill_mapping jsm
+JOIN skills_table st ON jsm.skill_id = st.skill_id
+JOIN skill_categories sc ON st.skill_id = sc.skill_id
+JOIN jobpostings jp ON jsm.jobid = jp.jobid;")
+
+plot_df <- plot_df %>%
+  group_by(skill_category, skill) %>%
+  summarise(med_salary = round(median(salary_year_avg), 0), n = n(), 
+            max_salary = round(max(salary_year_avg),0), min_salary = round(min(salary_year_avg),0))
+
+plot_df <- plot_df[plot_df$n >= 50,]
+
+plot_df <- plot_df %>%
+  group_by(skill_category) %>%
+  arrange(desc(med_salary)) %>%
+  slice_head(n = 20) %>%
+  ungroup()
+
+g <- ggplot(plot_df, aes(x = reorder(skill, med_salary), y = med_salary, fill = skill_category)) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(expand = c(0, 0), labels = scales::label_dollar(scale_cut = scales::cut_short_scale())) +
+  geom_text(aes(label = med_salary,  colour = skill_category), 
+            vjust = 0.3, hjust = -0.3, size = 2.5, show.legend = FALSE) +
+  facet_wrap(~ skill_category, scales = "free_y", ncol = 2) +
+  coord_flip(ylim = c(70000,185000)) + 
+  scale_fill_manual(values = color_vec) +
+  scale_colour_manual(values = color_vec) +
+  theme_minimal() +
+  labs(x = "Skill", y = "Median Salary", title = "Top 20 Skills by Skill Category") +
+  guides(fill = "none") + 
+  theme(panel.grid.minor.x = element_blank())
+```
+
+
+```{r}
+#| fig-width: 10
+#| fig-height: 14
+#| fig-format: svg
+
+g
+
+ggsave("../output/top20skill_salary_cat.png", dpi = 400, bg = "#FFFFFF")
+```
+
+
+## Q3. Which industry field is asking for these roles ? 
+
+```{r}
+#| code-fold: true
+#| label: tbl-industry
+#| tbl-cap: "Company Domain"
+
+plot_df <- dbGetQuery(con, "SELECT industry FROM jobpostings;")
+
+DT::datatable(
+  plot_df %>%
+    filter(!is.na(industry)) %>%
+    group_by(industry) %>%
+    summarise(Count = n()) %>%
+    #top_n(50, wt=Count) %>%
+    arrange(desc(Count)),
+  options = list(
+    pageLength = 15
+  )
+  )
+```
+
+## Q4. What is the relation of location with respect to the number of job postings and salary range?
+
+Salary varies by job country location, and job title. We will focus on United States jobs and specifically on data scientist role.
+
+```{r}
+#| code-fold: true
+
+plot_df <- dbGetQuery(con, "SELECT job_location, salary_year_avg FROM jobpostings
+                      WHERE job_country = 'United States' AND job_title_short = 'Data Scientist';")
+
+#plot_df <- df[df$job_country == 'United States' & df$job_title_short == 'Data Scientist',]
+plot_df$job_location <- sub(",.*", "", plot_df$job_location)
+
+plot_df <- plot_df %>%
+    group_by(job_location) %>%
+    summarise(n = n(), med_salary = median(salary_year_avg)) %>%
+    filter(n >= 10) %>%
+    arrange(desc(med_salary))
+
+`%ni%` <- Negate(`%in%`)
+
+plot_df <- plot_df[plot_df$job_location %ni% c('Toronto', 'United States', 'Anywhere', 'California'),]
+plot_df$job_location <- paste(plot_df$job_location, ', United States', sep = '')
+
+# Geocode the cities
+locations <- tibble(city = plot_df$job_location) %>% geocode(city, method = "osm", lat = latitude, long = longitude)
+
+colnames(plot_df) <- c('city', 'n', 'med_salary')
+plot_df <- merge(plot_df, locations, by='city')
+
+write.csv(plot_df, '../data/us_cities_lat_long.csv', row.names = FALSE)
+#plot_df <- read.csv('../data/us_cities_lat_long.csv')
+
+plot_df$city <- sub(",.*", "", plot_df$city)
+
+# Get world map data
+usa_map <- map_data("state")
+library(ggrepel)
+
+plot_df %>%
+  arrange(desc(med_salary))
+
+g <- ggplot() +
+  # Plot USA map
+  geom_polygon(data = usa_map, aes(x = long, y = lat, group = group), fill = "gray90", color = "white") +
+  # Overlay city points
+  geom_point(data = plot_df, aes(x = longitude, y = latitude, size = n, color = med_salary), alpha = 0.8) +
+  # Add city labels with ggrepel
+  geom_text_repel(data = plot_df, aes(x = longitude, y = latitude, label = city), 
+                size = 2.5, nudge_y = 1, segment.color = "gray50", segment.size = 0.5, max.overlaps=20) +
+  # Customize appearance
+  scale_color_gradient(low = "#004990", high = "firebrick2", name = "Median Salary") +
+  scale_size_continuous(range = c(3, 10), name = "# of Positings") +
+  theme_minimal(base_size = 14) +
+  labs(title = "Average Salary of a Data Scientist by City", x = "Longitude", y = "Latitude") +
+  coord_fixed(1.3) # Fix aspect ratio
+```
+
+
+
+```{r}
+#| fig-width: 12
+#| fig-height: 8
+
+g
+
+ggsave("../output/map.png", dpi = 400, bg = "#FFFFFF")
+```
+
+
+## Q5. Does a remote / work from home contract give on average lesser pay than an onsite contract?
+
+The remote jobs are US origin jobs (not exactly labelled if you can work anywhere in the world or anywhere in the US), so we will for now compare it with onsite US jobs.
+
+We will use Full-time contract to avoid large amount of variance between internship, short contracts vs full-time contracts.
+
+```{r}
+#| code-fold: true
+
+online <- dbGetQuery(con, "SELECT job_title_short, job_location, search_location, salary_year_avg FROM jobpostings
+                     WHERE job_work_from_home = FALSE AND job_country = 'United States' AND job_schedule_type = 'Full-time';")
+
+#online <- df[df$job_work_from_home == FALSE & df$job_country == 'United States' & df$job_schedule_type == 'Full-time',]
+online$job_location <- sub(".*,\\s*", "", online$job_location)
+online$job_location <- gsub("\\s*\\(.*?\\)", "", online$job_location)
+
+online[online$job_location == "NY",]$job_location <- "New York"
+online[online$job_location == "GA",]$job_location <- "Georgia"
+online[online$job_location == "FL",]$job_location <- "Florida"
+online[online$job_location == "IL",]$job_location <- "Illinois"
+online[online$job_location == "CA",]$job_location <- "California"
+online[online$job_location == "TX",]$job_location <- "Texas"
+
+online <- online %>%
+        group_by(job_location, job_title_short) %>%
+        summarise(n=n(), med_salary = median(salary_year_avg)) %>%
+        arrange(job_location)
+
+offline <- dbGetQuery(con, "SELECT job_title_short, job_location, search_location, salary_year_avg FROM jobpostings
+                      WHERE job_work_from_home = TRUE AND job_country = 'United States' AND job_schedule_type = 'Full-time';")
+
+#offline <- df[df$job_work_from_home == TRUE & df$job_country == 'United States' & df$job_schedule_type == 'Full-time',]
+offline$search_location <- sub(",.*", "", offline$search_location)
+offline <- offline %>%
+  group_by(search_location, job_title_short) %>%
+  summarise(n=n(), med_salary = median(salary_year_avg)) %>%
+  arrange(search_location)
+
+states <- c("California","Florida","Georgia","Illinois","New York","Texas")
+jobs <- c("Business Analyst","Data Analyst","Data Engineer","Data Scientist","Machine Learning Engineer",
+          "Senior Data Analyst","Senior Data Engineer","Senior Data Scientist","Software Engineer")
+
+diff_df <- as.data.frame(jobs)
+
+for(i in states){
+  temp_df <- merge(offline[offline$search_location == i,], online[online$job_location == i,],by="job_title_short") 
+  temp_df <- temp_df %>% group_by(job_title_short) %>% 
+    summarise(diff_offline_online = round((med_salary.x - med_salary.y)/med_salary.y,2))
+  colnames(temp_df) <- c('job', paste(i,"_off_on", sep = ""))
+  diff_df <- cbind(diff_df, temp_df[,2])
+}
+
+# online <- df[df$job_work_from_home == FALSE & df$job_country == 'United States' & df$job_schedule_type == 'Full-time',]
+# online <- online %>%
+#   group_by(job_title_short) %>%
+#   summarise(n=n(), med_salary = median(salary_year_avg)) %>%
+#   arrange(job_title_short)
+# 
+# offline <- df[df$job_work_from_home == TRUE & df$job_country == 'United States' & df$job_schedule_type == 'Full-time',]
+# offline <- offline %>%
+#       group_by(job_title_short) %>%
+#       summarise(n=n(), med_salary = median(salary_year_avg)) %>%
+#       arrange(job_title_short)
+# 
+# diff_df <- merge(offline, online,by="job_title_short")
+# diff_df <- diff_df %>% group_by(job_title_short) %>% 
+#       summarise(diff_offline_online = round(((med_salary.x - med_salary.y)/med_salary.y)*100,2))
+# 
+# diff_df
+```
+
+```{r}
+#| label: tbl-remote
+#| tbl-cap: "Remote vs On-Site Salary Difference"
+
+gt(diff_df) %>%
+  cols_label(
+    jobs = "Job Title",
+    California_off_on = "California",
+    Florida_off_on = "Florida",
+    Georgia_off_on = "Georgia",
+    Illinois_off_on = "Illinois",
+    `New York_off_on` = "New York",
+    Texas_off_on = "Texas"
+  ) %>%
+  tab_header(
+    title = "Remote vs On-Site Salary Difference"
+  ) %>% 
+  fmt_percent(
+    columns = California_off_on:Texas_off_on,
+    decimals = 2
+  ) %>%
+  data_color(
+    columns = California_off_on:Texas_off_on,
+    fn = \(v) lapply(v, \(x) if (is.na(x)) "grey" else if (x < 0) "darkred" else if (x > 0) "darkgreen" else "grey"),
+    apply_to = "text"
+  ) %>%
+  tab_style(
+    style = list(cell_text(weight = "bold")), # Bold text
+    locations = cells_title(groups = "title")
+  ) %>%
+  tab_style(
+    style = list(cell_text(weight = "bold")), # Bold text
+    locations = cells_column_labels()
+  )
+
+dbDisconnect(con)
+```
